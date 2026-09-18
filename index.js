@@ -326,15 +326,16 @@ async function resolveMediaTarget(msg) {
   return null
 }
 
-async function ytDownload(url) {
+async function ytDownload(url, { audio = false } = {}) {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabot-dl-'))
+  const commonArgs = ['--no-playlist', '--no-warnings', '--no-mtime']
+  const modeArgs = audio
+    ? ['-x', '--audio-format', 'mp3', '--audio-quality', '0']
+    : ['-f', 'b[filesize<64M]/bv*[height<=720]+ba/b/best', '--merge-output-format', 'mp4']
   try {
     await execFileAsync('yt-dlp', [
-      '--no-playlist',
-      '--no-warnings',
-      '--no-mtime',
-      '-f', 'b[filesize<64M]/bv*[height<=720]+ba/b/best',
-      '--merge-output-format', 'mp4',
+      ...commonArgs,
+      ...modeArgs,
       '-o', path.join(workDir, '%(id)s.%(ext)s'),
       url,
     ], { timeout: 180000, maxBuffer: 32 * 1024 * 1024 })
@@ -349,32 +350,34 @@ async function ytDownload(url) {
   }
 }
 
-async function handleDownload(msg, url) {
+async function handleDownload(msg, url, { audio = false } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) {
-    await msg.reply('⚠️ Kasih link-nya. Contoh: `.yt https://youtu.be/xxxx`')
+    await client.sendMessage(msg.from, audio
+      ? '⚠️ Kasih link YouTube-nya. Contoh: `.mp3 https://youtu.be/xxxx`'
+      : '⚠️ Kasih link-nya. Contoh: `.yt https://youtu.be/xxxx`')
     return
   }
-  await msg.reply('⏳ Lagi diproses, tunggu sebentar...')
+  await client.sendMessage(msg.from, audio ? '⏳ Lagi convert ke MP3, tunggu sebentar...' : '⏳ Lagi diproses, tunggu sebentar...')
 
   let workDir
   try {
-    const res = await ytDownload(url)
+    const res = await ytDownload(url, { audio })
     workDir = res.workDir
     if (!res.files.length) {
-      await msg.reply('❌ Nggak ada media yang bisa diunduh dari link itu.')
+      await client.sendMessage(msg.from,'❌ Nggak ada media yang bisa diunduh dari link itu.')
       return
     }
     for (const file of res.files) {
       const size = fs.statSync(file).size
       if (size > WA_MEDIA_LIMIT) {
-        await msg.reply(`⚠️ File "${path.basename(file)}" kegedean (${(size / 1048576).toFixed(1)}MB), dilewati.`)
+        await client.sendMessage(msg.from,`⚠️ File "${path.basename(file)}" kegedean (${(size / 1048576).toFixed(1)}MB), dilewati.`)
         continue
       }
-      await msg.reply(MessageMedia.fromFilePath(file))
+      await client.sendMessage(msg.from,MessageMedia.fromFilePath(file))
     }
   } catch (err) {
     console.error('Download error:', err.message)
-    await msg.reply('❌ Gagal download. Kemungkinan link salah, konten private, atau platform lagi berubah.')
+    await client.sendMessage(msg.from,'❌ Gagal download. Kemungkinan link salah, konten private, atau platform lagi berubah.')
   } finally {
     if (workDir) fs.rmSync(workDir, { recursive: true, force: true })
   }
@@ -383,13 +386,13 @@ async function handleDownload(msg, url) {
 async function handleSticker(msg) {
   const target = await resolveMediaTarget(msg)
   if (!target) {
-    await msg.reply('⚠️ Balas sebuah *gambar* dengan perintah `.sticker`.')
+    await client.sendMessage(msg.from,'⚠️ Balas sebuah *gambar* dengan perintah `.sticker`.')
     return
   }
   try {
     const media = await target.downloadMedia()
     if (!media || !media.mimetype.startsWith('image')) {
-      await msg.reply('⚠️ Media yang dibalas bukan gambar.')
+      await client.sendMessage(msg.from,'⚠️ Media yang dibalas bukan gambar.')
       return
     }
     const webp = await sharp(Buffer.from(media.data, 'base64'))
@@ -397,36 +400,36 @@ async function handleSticker(msg) {
       .webp()
       .toBuffer()
     const sticker = new MessageMedia('image/webp', webp.toString('base64'))
-    await msg.reply(sticker, undefined, {
+    await client.sendMessage(msg.from, sticker, {
       sendMediaAsSticker: true,
       stickerName: 'Ichikara',
       stickerAuthor: 'Bot Ichikara',
     })
   } catch (err) {
     console.error('Sticker error:', err.message)
-    await msg.reply('❌ Gagal bikin stiker.')
+    await client.sendMessage(msg.from,'❌ Gagal bikin stiker.')
   }
 }
 
 async function handleOcr(msg) {
   const target = await resolveMediaTarget(msg)
   if (!target) {
-    await msg.reply('⚠️ Balas sebuah *gambar* dengan perintah `.ocr`.')
+    await client.sendMessage(msg.from,'⚠️ Balas sebuah *gambar* dengan perintah `.ocr`.')
     return
   }
   try {
     const media = await target.downloadMedia()
     if (!media || !media.mimetype.startsWith('image')) {
-      await msg.reply('⚠️ Media yang dibalas bukan gambar.')
+      await client.sendMessage(msg.from,'⚠️ Media yang dibalas bukan gambar.')
       return
     }
-    await msg.reply('🔍 Lagi baca teks di gambar...')
+    await client.sendMessage(msg.from,'🔍 Lagi baca teks di gambar...')
     const { data: { text } } = await Tesseract.recognize(Buffer.from(media.data, 'base64'), 'ind+eng')
     const clean = text.trim()
-    await msg.reply(clean ? `*Hasil OCR:*\n\n${clean}` : 'ℹ️ Nggak ada teks yang kebaca di gambar itu.')
+    await client.sendMessage(msg.from,clean ? `*Hasil OCR:*\n\n${clean}` : 'ℹ️ Nggak ada teks yang kebaca di gambar itu.')
   } catch (err) {
     console.error('OCR error:', err.message)
-    await msg.reply('❌ Gagal baca teks dari gambar.')
+    await client.sendMessage(msg.from,'❌ Gagal baca teks dari gambar.')
   }
 }
 
@@ -445,7 +448,8 @@ function helpText() {
     `.ig <link>       Download media Instagram\n` +
     `.fb <link>       Download video Facebook\n` +
     `.threads <link>  Download media Threads\n` +
-    `.dl <link>       Auto-deteksi platform\n\n` +
+    `.dl <link>       Auto-deteksi platform\n` +
+    `.mp3 <link>      Convert YouTube ke MP3 (audio)\n\n` +
     `*TOOLS*\n` +
     `.sticker    Balas sebuah gambar untuk jadi stiker (alias .s)\n` +
     `.ocr        Balas sebuah gambar untuk baca teksnya\n` +
@@ -479,7 +483,7 @@ client.on('message', async (msg) => {
 
   const [cmdRaw, ...args] = raw.slice(1).split(/\s+/)
   const cmd = cmdRaw.toLowerCase()
-  const reply = (text) => msg.reply(text)
+  const reply = (text) => client.sendMessage(msg.from, text)
 
   try {
     switch (cmd) {
@@ -492,6 +496,8 @@ client.on('message', async (msg) => {
       case 'threads':
       case 'dl':
         await handleDownload(msg, args.join(' ')); break
+      case 'mp3':
+        await handleDownload(msg, args.join(' '), { audio: true }); break
       case 'sticker':
       case 's':
         await handleSticker(msg); break
