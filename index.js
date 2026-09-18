@@ -326,28 +326,64 @@ async function resolveMediaTarget(msg) {
   return null
 }
 
+// Cookie opsional buat situs yang maksa login (Instagram/Facebook/Threads).
+//   YTDLP_COOKIES         : path ke file cookies.txt (format Netscape)
+//   YTDLP_COOKIES_BROWSER : nama browser (mis. "chrome") buat ambil cookie langsung
+function cookieArgs() {
+  if (process.env.YTDLP_COOKIES && fs.existsSync(process.env.YTDLP_COOKIES)) {
+    return ['--cookies', process.env.YTDLP_COOKIES]
+  }
+  if (process.env.YTDLP_COOKIES_BROWSER) {
+    return ['--cookies-from-browser', process.env.YTDLP_COOKIES_BROWSER]
+  }
+  return []
+}
+
 async function ytDownload(url, { audio = false } = {}) {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabot-dl-'))
-  const commonArgs = ['--no-playlist', '--no-warnings', '--no-mtime']
-  const modeArgs = audio
-    ? ['-x', '--audio-format', 'mp3', '--audio-quality', '0']
-    : ['-f', 'b[filesize<64M]/bv*[height<=720]+ba/b/best', '--merge-output-format', 'mp4']
-  try {
-    await execFileAsync('yt-dlp', [
-      ...commonArgs,
-      ...modeArgs,
-      '-o', path.join(workDir, '%(id)s.%(ext)s'),
-      url,
-    ], { timeout: 180000, maxBuffer: 32 * 1024 * 1024 })
+  const common = ['--no-playlist', '--no-warnings', '--no-mtime', ...cookieArgs(), '-o', path.join(workDir, '%(id)s.%(ext)s')]
+  const run = (extra) => execFileAsync('yt-dlp', [...common, ...extra, url], { timeout: 180000, maxBuffer: 32 * 1024 * 1024 })
+  const listFiles = () => fs.readdirSync(workDir)
+    .map(f => path.join(workDir, f))
+    .filter(f => fs.statSync(f).isFile())
 
-    const files = fs.readdirSync(workDir)
-      .map(f => path.join(workDir, f))
-      .filter(f => fs.statSync(f).isFile())
+  try {
+    if (audio) {
+      await run(['-x', '--audio-format', 'mp3', '--audio-quality', '0'])
+    } else {
+      // Tahap 1: coba sebagai video (batasi resolusi biar ukuran wajar).
+      try {
+        await run(['-f', 'bv*[height<=720]+ba/b[height<=720]/b/best', '--merge-output-format', 'mp4'])
+      } catch (e1) {
+        // Tahap 2: kalau video gagal & belum ada file, coba tanpa filter format.
+        // Ini nangkep post foto (mis. Instagram/Threads yang isinya gambar).
+        if (!listFiles().length) await run([])
+        else throw e1
+      }
+    }
+
+    const files = listFiles()
+    if (!files.length) throw new Error('NO_MEDIA')
     return { files, workDir }
   } catch (err) {
     fs.rmSync(workDir, { recursive: true, force: true })
     throw err
   }
+}
+
+// Terjemahkan error yt-dlp jadi pesan yang bisa ditindaklanjuti user.
+function downloadErrorMessage(rawMsg) {
+  const m = rawMsg || ''
+  if (/could not resolve host|getaddrinfo|failed to resolve|name resolution|resolve host/i.test(m)) {
+    return '❌ Gagal: komputer bot nggak bisa akses situsnya (masalah jaringan/DNS di server, atau situs itu diblokir di jaringan RDP).'
+  }
+  if (/login required|requires? login|private|not available|rate.?limit|cookies|account/i.test(m)) {
+    return '❌ Gagal: kontennya private atau butuh login. Bot cuma bisa ambil konten publik.'
+  }
+  if (/no video formats|no_media|unsupported url|unable to (extract|download)/i.test(m)) {
+    return '❌ Gagal: nggak ada media yang bisa diunduh dari link itu (mungkin post teks doang, atau formatnya belum didukung).'
+  }
+  return '❌ Gagal download. Cek lagi link-nya, atau coba lagi nanti.'
 }
 
 async function handleDownload(msg, url, { audio = false } = {}) {
@@ -377,7 +413,7 @@ async function handleDownload(msg, url, { audio = false } = {}) {
     }
   } catch (err) {
     console.error('Download error:', err.message)
-    await client.sendMessage(msg.from,'❌ Gagal download. Kemungkinan link salah, konten private, atau platform lagi berubah.')
+    await client.sendMessage(msg.from, downloadErrorMessage(err.message))
   } finally {
     if (workDir) fs.rmSync(workDir, { recursive: true, force: true })
   }
